@@ -1,1 +1,0 @@
-{"version":3,"file":"lab.schema.js","sourceRoot":"","sources":["../../../src/modules/lab/lab.schema.ts"],"names":[],"mappings":";;;AAAa,QAAA,eAAe,GAAG;IAC7B,IAAI,EAAE;QACJ,IAAI,EAAE,QAAQ;QACd,UAAU,EAAE;YACV,IAAI,EAAE,EAAE,IAAI,EAAE,QAAQ,EAAE;SACzB;QACD,QAAQ,EAAE,CAAC,MAAM,CAAC;KACnB;CACO,CAAC"}

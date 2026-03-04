@@ -1,1 +1,0 @@
-{"version":3,"file":"cors.js","sourceRoot":"","sources":["../../src/plugins/cors.ts"],"names":[],"mappings":";;;;;AACA,yDAAiC;AAEjC,MAAM,UAAU,GAAuB,KAAK,EAAE,GAAG,EAAE,EAAE;IACnD,MAAM,GAAG,CAAC,QAAQ,CAAC,cAAI,EAAE;QACvB,MAAM,EAAE,IAAI;KACb,CAAC,CAAC;AACL,CAAC,CAAC;AAEF,kBAAe,UAAU,CAAC"}
