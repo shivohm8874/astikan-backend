@@ -27,24 +27,10 @@ export type AppEnv = {
 
 const envSchema = {
   type: "object",
-  required: [
-    "PORT",
-    "CORS_ORIGIN",
-    "SUPABASE_URL",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "MONGODB_URI",
-    "MONGODB_DB_NAME",
-    "REDIS_URL",
-    "REDIS_TTL_SECONDS",
-    "NIRAMAYA_TEST_URL",
-    "NIRAMAYA_PROD_URL",
-    "NIRAMAYA_PINCODE_URL",
-    "NIRAMAYA_AUTH",
-    "NIRAMAYA_ALLOW_INSECURE_TLS",
-  ],
+  required: ["PORT", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
   properties: {
     PORT: { type: "number", default: 4000 },
-    CORS_ORIGIN: { type: "string", default: "http://localhost:5173" },
+    CORS_ORIGIN: { type: "string", default: "*" },
     SUPABASE_URL: { type: "string", default: "" },
     SUPABASE_SERVICE_ROLE_KEY: { type: "string", default: "" },
     MONGODB_URI: { type: "string", default: "" },
