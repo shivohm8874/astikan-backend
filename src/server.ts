@@ -7,7 +7,8 @@ const MAX_PORT_RETRIES = 10;
 const start = async () => {
   try {
     await app.ready();
-    let selectedPort = app.config.PORT;
+    const envPort = Number(process.env.PORT);
+    let selectedPort = Number.isFinite(envPort) && envPort > 0 ? envPort : app.config.PORT;
 
     for (let attempt = 0; attempt <= MAX_PORT_RETRIES; attempt += 1) {
       try {
