@@ -4,6 +4,94 @@ import { enqueueOutboxEvent, requireMongo, requireSupabase } from "../core/data"
 import { ensureCompanyByReference, ensureDoctorPrincipal, ensureEmployeePrincipal } from "../core/identity";
 
 const pharmacyRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/products", async (request) => {
+    const query = request.query as { search?: string; category?: string; limit?: string; audience?: string };
+    const supabase = requireSupabase(app);
+    const limit = query.limit ? Number(query.limit) : 50;
+    let dbQuery = supabase
+      .from("pharmacy_product_catalog")
+      .select("id, sku, name, category, description, base_price_inr, image_urls_json, is_active, audience")
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .limit(Number.isFinite(limit) ? limit : 50);
+
+    if (query.category) {
+      dbQuery = dbQuery.eq("category", query.category);
+    }
+    if (query.search) {
+      dbQuery = dbQuery.ilike("name", `%${query.search}%`);
+    }
+    if (query.audience) {
+      dbQuery = dbQuery.eq("audience", query.audience);
+    }
+
+    const { data, error } = await dbQuery;
+    if (error) {
+      throw new Error(`Failed to fetch products: ${error.message}`);
+    }
+
+    const enriched = await attachInventorySnapshot(supabase, data ?? []);
+    return { status: "ok", data: enriched };
+  });
+
+  app.post("/products/lookup", async (request) => {
+    const body = request.body as { ids?: string[]; audience?: string };
+    const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : [];
+    if (!ids.length) {
+      return { status: "ok", data: [] };
+    }
+
+    const supabase = requireSupabase(app);
+    let dbQuery = supabase
+      .from("pharmacy_product_catalog")
+      .select("id, sku, name, category, description, base_price_inr, image_urls_json, is_active, audience")
+      .in("id", ids);
+
+    if (body.audience) {
+      dbQuery = dbQuery.eq("audience", body.audience);
+    }
+
+    const { data, error } = await dbQuery;
+
+    if (error) {
+      throw new Error(`Failed to lookup products: ${error.message}`);
+    }
+
+    const enriched = await attachInventorySnapshot(supabase, data ?? []);
+    return { status: "ok", data: enriched };
+  });
+
+  app.get("/categories", async (request) => {
+    const query = request.query as { audience?: string };
+    const supabase = requireSupabase(app);
+    let dbQuery = supabase
+      .from("pharmacy_product_catalog")
+      .select("category")
+      .eq("is_active", true);
+
+    if (query.audience) {
+      dbQuery = dbQuery.eq("audience", query.audience);
+    }
+
+    const { data, error } = await dbQuery;
+
+    if (error) {
+      throw new Error(`Failed to fetch categories: ${error.message}`);
+    }
+
+    const counts = new Map<string, number>();
+    for (const row of data ?? []) {
+      const key = row.category ?? "Other";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
+    const payload = Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return { status: "ok", data: payload };
+  });
+
   app.post("/orders", async (request) => {
     const body = request.body as {
       companyReference?: string;
@@ -75,6 +163,7 @@ const pharmacyRoutes: FastifyPluginAsync = async (app) => {
       let productId = item.productId ?? "";
       if (!productId) {
         productId = crypto.randomUUID();
+        const audience = body.orderSource === "doctor_store" ? "doctor" : "employee";
         await supabase.from("pharmacy_product_catalog").upsert({
           id: productId,
           sku: item.sku ?? `SKU-${slug(item.name)}`,
@@ -84,6 +173,7 @@ const pharmacyRoutes: FastifyPluginAsync = async (app) => {
           base_price_inr: item.price,
           image_urls_json: item.imageUrls ?? [],
           is_active: true,
+          audience,
           updated_at: now,
         });
       }
@@ -132,6 +222,46 @@ const pharmacyRoutes: FastifyPluginAsync = async (app) => {
     return { status: "ok", data: { orderId, companyId } };
   });
 };
+
+async function attachInventorySnapshot(
+  supabase: ReturnType<typeof requireSupabase>,
+  products: Array<{
+    id: string;
+    sku?: string | null;
+    name: string;
+    category?: string | null;
+    description?: string | null;
+    base_price_inr: number;
+    image_urls_json?: string[];
+    is_active?: boolean;
+  }>
+) {
+  if (!products.length) return [];
+
+  const ids = products.map((item) => item.id);
+  const { data: inventory } = await supabase
+    .from("pharmacy_inventory")
+    .select("product_id, available_qty, reserved_qty")
+    .in("product_id", ids);
+
+  const inventoryMap = new Map<string, { available_qty: number; reserved_qty: number }>();
+  for (const row of inventory ?? []) {
+    inventoryMap.set(row.product_id, {
+      available_qty: row.available_qty ?? 0,
+      reserved_qty: row.reserved_qty ?? 0,
+    });
+  }
+
+  return products.map((item) => {
+    const inv = inventoryMap.get(item.id);
+    const available = inv ? Math.max((inv.available_qty ?? 0) - (inv.reserved_qty ?? 0), 0) : null;
+    return {
+      ...item,
+      available_qty: available,
+      in_stock: available === null ? Boolean(item.is_active) : available > 0,
+    };
+  });
+}
 
 function slug(input: string) {
   return input.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
