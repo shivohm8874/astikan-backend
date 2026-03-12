@@ -16,10 +16,6 @@ const corsPlugin: FastifyPluginAsync = async (app) => {
     credentials: true,
   });
 
-  app.options("/*", async (_request, reply) => {
-    reply.status(204).send();
-  });
-
   app.addHook("onSend", async (request, reply, payload) => {
     if (!reply.getHeader("access-control-allow-origin")) {
       const reqOrigin = request.headers.origin;
