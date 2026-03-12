@@ -16,9 +16,9 @@ const corsPlugin: FastifyPluginAsync = async (app) => {
     credentials: true,
   });
 
-  app.addHook("onSend", async (request, reply, payload) => {
+  app.addHook("onRequest", async (request, reply) => {
+    const reqOrigin = request.headers.origin;
     if (!reply.getHeader("access-control-allow-origin")) {
-      const reqOrigin = request.headers.origin;
       reply.header("Access-Control-Allow-Origin", reqOrigin ?? "*");
       reply.header("Access-Control-Allow-Credentials", "true");
       reply.header(
@@ -30,7 +30,10 @@ const corsPlugin: FastifyPluginAsync = async (app) => {
         "GET, POST, PUT, PATCH, DELETE, OPTIONS"
       );
     }
-    return payload;
+
+    if (request.method === "OPTIONS") {
+      reply.status(204).send();
+    }
   });
 };
 
