@@ -12,15 +12,14 @@ const corsPlugin: FastifyPluginAsync = async (app) => {
   const origin = hasWildcard ? true : configuredOrigins;
 
   await app.register(cors, {
-    origin,
-    credentials: true,
+    origin: true,
+    credentials: false,
   });
 
   app.addHook("onRequest", async (request, reply) => {
     const reqOrigin = request.headers.origin;
     if (!reply.getHeader("access-control-allow-origin")) {
       reply.header("Access-Control-Allow-Origin", reqOrigin ?? "*");
-      reply.header("Access-Control-Allow-Credentials", "true");
       reply.header(
         "Access-Control-Allow-Headers",
         "Origin, X-Requested-With, Content-Type, Accept, Authorization"
