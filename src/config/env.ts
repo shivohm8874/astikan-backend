@@ -7,6 +7,9 @@ export type AppEnv = {
   CORS_ORIGIN: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  SUPERADMIN_SEED_USERNAME: string;
+  SUPERADMIN_SEED_PASSWORD: string;
+  SUPERADMIN_SEED_EMAIL: string;
   MONGODB_URI: string;
   MONGODB_DB_NAME: string;
   REDIS_URL: string;
@@ -34,6 +37,9 @@ const envSchema = {
     CORS_ORIGIN: { type: "string", default: "*" },
     SUPABASE_URL: { type: "string", default: "" },
     SUPABASE_SERVICE_ROLE_KEY: { type: "string", default: "" },
+    SUPERADMIN_SEED_USERNAME: { type: "string", default: "superadmin" },
+    SUPERADMIN_SEED_PASSWORD: { type: "string", default: "Astikan@2026" },
+    SUPERADMIN_SEED_EMAIL: { type: "string", default: "superadmin@astikan.local" },
     MONGODB_URI: { type: "string", default: "" },
     MONGODB_DB_NAME: { type: "string", default: "astikan" },
     REDIS_URL: { type: "string", default: "" },

@@ -141,6 +141,23 @@ function chooseProvider(
   return firstChoice;
 }
 
+function buildRtcPayloadFromToken(params: {
+  app: Parameters<FastifyPluginAsync>[0];
+  provider: Provider;
+  channelName: string;
+  userId: string;
+  token: string;
+}) {
+  const { app, provider, channelName, userId, token } = params;
+  return {
+    provider,
+    appId: provider === "zego" ? app.config.ZEGO_APP_ID : app.config.AGORA_APP_ID,
+    userId,
+    channelName,
+    token,
+  };
+}
+
 async function persistMongoEvent(
   app: Parameters<FastifyPluginAsync>[0],
   event: {
@@ -166,6 +183,50 @@ async function persistMongoEvent(
   } catch (error) {
     app.log.warn({ error }, "Skipping teleconsult Mongo event write");
   }
+}
+
+async function persistTokenRecord(
+  app: Parameters<FastifyPluginAsync>[0],
+  tokenRecord: TokenRecord
+) {
+  if (hasMongo(app)) {
+    try {
+      await app.dbClients.mongo!.collection("teleconsult_tokens").insertOne(tokenRecord);
+      return;
+    } catch (error) {
+      app.log.warn({ error }, "Failed to store teleconsult token in Mongo");
+    }
+  }
+  tokensFallback.set(tokenRecord.id, tokenRecord);
+}
+
+async function findStoredToken(
+  app: Parameters<FastifyPluginAsync>[0],
+  params: { sessionId: string; participantId: string; provider: Provider }
+) {
+  if (hasMongo(app)) {
+    try {
+      return await app.dbClients.mongo!
+        .collection("teleconsult_tokens")
+        .find({ sessionId: params.sessionId, participantId: params.participantId, provider: params.provider })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .next();
+    } catch (error) {
+      app.log.warn({ error }, "Failed to read teleconsult token from Mongo");
+    }
+  }
+
+  for (const token of tokensFallback.values()) {
+    if (
+      token.sessionId === params.sessionId &&
+      token.participantId === params.participantId &&
+      token.provider === params.provider
+    ) {
+      return token;
+    }
+  }
+  return null;
 }
 
 const teleconsultRoutes: FastifyPluginAsync = async (app) => {
@@ -259,6 +320,73 @@ const teleconsultRoutes: FastifyPluginAsync = async (app) => {
       payload: { provider: session.activeProvider },
     });
 
+    const employeeRtc = buildRtcPayload({
+      app,
+      provider: session.activeProvider,
+      channelName: session.channelName,
+      userId: session.employeeId,
+    });
+
+    const tokenIssuedAt = new Date().toISOString();
+    await persistTokenRecord(app, {
+      id: crypto.randomUUID(),
+      sessionId: session.id,
+      participantId: session.employeeId,
+      participantType: "employee",
+      provider: session.activeProvider,
+      channelName: session.channelName,
+      token: employeeRtc.token,
+      createdAt: tokenIssuedAt,
+    });
+
+    await persistMongoEvent(app, {
+      teleconsultSessionId: session.id,
+      companyId: session.companyId,
+      employeeId: session.employeeId,
+      doctorId: session.doctorId,
+      eventType: "token_issued",
+      payload: {
+        participantType: "employee",
+        participantId: session.employeeId,
+        provider: session.activeProvider,
+        preIssued: true,
+      },
+    });
+
+    try {
+      const doctorRtc = buildRtcPayload({
+        app,
+        provider: session.activeProvider,
+        channelName: session.channelName,
+        userId: session.doctorId,
+      });
+      await persistTokenRecord(app, {
+        id: crypto.randomUUID(),
+        sessionId: session.id,
+        participantId: session.doctorId,
+        participantType: "doctor",
+        provider: session.activeProvider,
+        channelName: session.channelName,
+        token: doctorRtc.token,
+        createdAt: tokenIssuedAt,
+      });
+      await persistMongoEvent(app, {
+        teleconsultSessionId: session.id,
+        companyId: session.companyId,
+        employeeId: session.employeeId,
+        doctorId: session.doctorId,
+        eventType: "token_issued",
+        payload: {
+          participantType: "doctor",
+          participantId: session.doctorId,
+          provider: session.activeProvider,
+          preIssued: true,
+        },
+      });
+    } catch (error) {
+      app.log.warn({ error }, "Doctor teleconsult token pre-issue failed");
+    }
+
     return {
       status: "ok",
       data: {
@@ -266,12 +394,7 @@ const teleconsultRoutes: FastifyPluginAsync = async (app) => {
         status: session.status,
         provider: session.activeProvider,
         channelName: session.channelName,
-        rtc: buildRtcPayload({
-          app,
-          provider: session.activeProvider,
-          channelName: session.channelName,
-          userId: session.employeeId,
-        }),
+        rtc: employeeRtc,
       },
     };
   });
@@ -384,51 +507,71 @@ const teleconsultRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
-    const rtcPayload = buildRtcPayload({
-      app,
-      provider: session.activeProvider,
-      channelName: session.channelName,
-      userId:
-        body.participantId ??
-        (body.participantType === "doctor" ? session.doctorId : session.employeeId),
-    });
-
     const participantType = body.participantType ?? "employee";
     const participantId = body.participantId ?? (participantType === "doctor" ? session.doctorId : session.employeeId);
-    const tokenRecord: TokenRecord = {
-      id: crypto.randomUUID(),
+    const storedToken = await findStoredToken(app, {
       sessionId: session.id,
       participantId,
-      participantType,
       provider: session.activeProvider,
-      channelName: session.channelName,
-      token: rtcPayload.token,
-      createdAt: new Date().toISOString(),
-    };
-
-    if (hasMongo(app)) {
-      try {
-        await app.dbClients.mongo!.collection("teleconsult_tokens").insertOne(tokenRecord);
-      } catch (error) {
-        app.log.warn({ error }, "Failed to store teleconsult token in Mongo");
-      }
-    } else {
-      tokensFallback.set(tokenRecord.id, tokenRecord);
-    }
-
-    await persistMongoEvent(app, {
-      teleconsultSessionId: session.id,
-      companyId: session.companyId,
-      employeeId: session.employeeId,
-      doctorId: session.doctorId,
-      eventType: "token_issued",
-      payload: {
-        tokenId: tokenRecord.id,
-        participantType,
-        participantId,
-        provider: session.activeProvider,
-      },
     });
+
+    let rtcPayload = storedToken
+      ? buildRtcPayloadFromToken({
+          app,
+          provider: session.activeProvider,
+          channelName: session.channelName,
+          userId: participantId,
+          token: storedToken.token,
+        })
+      : buildRtcPayload({
+          app,
+          provider: session.activeProvider,
+          channelName: session.channelName,
+          userId: participantId,
+        });
+
+    if (!storedToken) {
+      const tokenRecord: TokenRecord = {
+        id: crypto.randomUUID(),
+        sessionId: session.id,
+        participantId,
+        participantType,
+        provider: session.activeProvider,
+        channelName: session.channelName,
+        token: rtcPayload.token,
+        createdAt: new Date().toISOString(),
+      };
+      await persistTokenRecord(app, tokenRecord);
+
+      await persistMongoEvent(app, {
+        teleconsultSessionId: session.id,
+        companyId: session.companyId,
+        employeeId: session.employeeId,
+        doctorId: session.doctorId,
+        eventType: "token_issued",
+        payload: {
+          tokenId: tokenRecord.id,
+          participantType,
+          participantId,
+          provider: session.activeProvider,
+        },
+      });
+    } else {
+      await persistMongoEvent(app, {
+        teleconsultSessionId: session.id,
+        companyId: session.companyId,
+        employeeId: session.employeeId,
+        doctorId: session.doctorId,
+        eventType: "token_issued",
+        payload: {
+          tokenId: storedToken.id,
+          participantType,
+          participantId,
+          provider: session.activeProvider,
+          reused: true,
+        },
+      });
+    }
 
     return {
       status: "ok",

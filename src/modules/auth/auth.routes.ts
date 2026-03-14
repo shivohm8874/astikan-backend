@@ -19,6 +19,12 @@ function verifyPassword(password: string, storedHash: string) {
   return crypto.timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(digestHex, "hex"));
 }
 
+function createPasswordHash(password: string) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const digest = hashPassword(password, salt);
+  return `scrypt$${salt}$${digest}`;
+}
+
 const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/employee/company-authorize", async (request, reply) => {
     const body = request.body as { companyCode?: string };
@@ -140,6 +146,76 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     };
   }
 
+  async function ensureSuperAdminSeed(username: string) {
+    const seedUsername = (app.config.SUPERADMIN_SEED_USERNAME || "superadmin").trim().toLowerCase();
+    if (username !== seedUsername) return;
+
+    const supabase = requireSupabase(app);
+    const { data: existing } = await supabase
+      .from("login_accounts")
+      .select("id")
+      .eq("identifier_type", "username")
+      .eq("identifier", seedUsername)
+      .eq("role", "super_admin")
+      .maybeSingle();
+
+    if (existing?.id) return;
+
+    const seedEmail = (app.config.SUPERADMIN_SEED_EMAIL || "superadmin@astikan.local").trim().toLowerCase();
+    const seedPassword = app.config.SUPERADMIN_SEED_PASSWORD || "Astikan@2026";
+
+    let userId: string | null = null;
+    try {
+      const created = await supabase.auth.admin.createUser({
+        email: seedEmail,
+        email_confirm: true,
+        user_metadata: { full_name: "Astikan Super Admin" },
+      });
+      userId = created.data.user?.id ?? null;
+    } catch {
+      userId = null;
+    }
+
+    if (!userId) {
+      const { data: fallbackUser } = await supabase
+        .from("app_users")
+        .select("id")
+        .eq("email", seedEmail)
+        .maybeSingle();
+      userId = fallbackUser?.id ?? null;
+    }
+
+    if (!userId) {
+      throw new Error("Unable to bootstrap super admin user");
+    }
+
+    await supabase.from("app_users").upsert({
+      id: userId,
+      primary_role: "super_admin",
+      full_name: "Astikan Super Admin",
+      email: seedEmail,
+      status: "active",
+      updated_at: new Date().toISOString(),
+    });
+
+    await supabase.from("user_roles").upsert({
+      user_id: userId,
+      role: "super_admin",
+      company_id: null,
+      is_primary: true,
+    });
+
+    await supabase.from("login_accounts").upsert({
+      user_id: userId,
+      company_id: null,
+      role: "super_admin",
+      identifier_type: "username",
+      identifier: seedUsername,
+      password_hash: createPasswordHash(seedPassword),
+      status: "active",
+    });
+  }
+
   app.post("/employee/login", async (request, reply) => {
     const body = request.body as { email?: string; password?: string };
     const email = normalize(body.email ?? "");
@@ -196,6 +272,28 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     const account = await findLoginAccount("username", username, "corporate_admin", accessCode.company_id);
     if (!account || !verifyPassword(password, account.password_hash)) {
       return reply.code(401).send({ status: "error", message: "Invalid corporate credentials." });
+    }
+
+    return { status: "ok", data: await buildUserPayload(account.user_id, account.company_id) };
+  });
+
+  app.post("/superadmin/login", async (request, reply) => {
+    const body = request.body as { username?: string; password?: string };
+    const username = normalize(body.username ?? "");
+    const password = body.password ?? "";
+    if (!username || !password) {
+      return reply.code(400).send({ status: "error", message: "Username and password are required." });
+    }
+
+    try {
+      await ensureSuperAdminSeed(username);
+    } catch (error) {
+      app.log.warn({ error }, "Super admin seed failed");
+    }
+
+    const account = await findLoginAccount("username", username, "super_admin");
+    if (!account || !verifyPassword(password, account.password_hash)) {
+      return reply.code(401).send({ status: "error", message: "Invalid super admin credentials." });
     }
 
     return { status: "ok", data: await buildUserPayload(account.user_id, account.company_id) };
