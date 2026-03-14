@@ -22,11 +22,19 @@ type SuggestedTest = {
   reason?: string;
   category?: string;
 };
+type SuggestedMedicine = {
+  name: string;
+  reason?: string;
+  category?: string;
+};
 type AiPhase = "clarify" | "recommend";
 type AiMeta = {
   phase: AiPhase;
   quickReplies: string[];
   tests?: SuggestedTest[];
+  medicines?: SuggestedMedicine[];
+  doctorSpecialty?: string;
+  nextAction?: "book_doctor" | "suggest_tests" | "none";
 };
 
 export type ReadinessQuestion = {
@@ -84,11 +92,17 @@ const parseAiMeta = (raw: string): {
   phase: AiPhase;
   quickReplies: string[];
   suggestedTests: SuggestedTest[];
+  suggestedMedicines: SuggestedMedicine[];
+  doctorSpecialty?: string;
+  nextAction?: "book_doctor" | "suggest_tests" | "none";
 } => {
   let cleanedReply = raw;
   let phase: AiPhase = "clarify";
   let quickReplies: string[] = [];
   let suggestedTests: SuggestedTest[] = [];
+  let suggestedMedicines: SuggestedMedicine[] = [];
+  let doctorSpecialty: string | undefined;
+  let nextAction: "book_doctor" | "suggest_tests" | "none" | undefined;
 
   const metaMatch = raw.match(/AI_META_JSON:\s*(\{[\s\S]*\})/i);
   if (metaMatch?.[1]) {
@@ -103,6 +117,11 @@ const parseAiMeta = (raw: string): {
       suggestedTests = (parsed.tests ?? [])
         .filter((item) => item?.name && item.name.trim().length > 0)
         .slice(0, 5);
+      suggestedMedicines = (parsed.medicines ?? [])
+        .filter((item) => item?.name && item.name.trim().length > 0)
+        .slice(0, 5);
+      doctorSpecialty = parsed.doctorSpecialty?.trim() || undefined;
+      nextAction = parsed.nextAction ?? undefined;
       cleanedReply = raw.replace(metaMatch[0], "").trim();
     } catch {
       // Fallback below.
@@ -124,7 +143,7 @@ const parseAiMeta = (raw: string): {
         : ["It started this morning", "I also feel dizzy", "What should I check first?"];
   }
 
-  return { cleanedReply, phase, quickReplies, suggestedTests };
+  return { cleanedReply, phase, quickReplies, suggestedTests, suggestedMedicines, doctorSpecialty, nextAction };
 };
 
 const defaultReadinessQuestions = (testName: string): ReadinessQuestion[] => [
@@ -220,6 +239,9 @@ export const buildAiService = (config: AiConfig) => {
       phase: AiPhase;
       quickReplies: string[];
       suggestedTests: SuggestedTest[];
+      suggestedMedicines: SuggestedMedicine[];
+      doctorSpecialty?: string;
+      nextAction?: "book_doctor" | "suggest_tests" | "none";
     }> => {
       const resolvedApiKey = (apiKey || config.GROK_API_KEY || "").trim();
       if (!resolvedApiKey) {
@@ -236,7 +258,7 @@ export const buildAiService = (config: AiConfig) => {
         {
           role: "system",
           content:
-            "You are a caring human-like health assistant for lab-test guidance. Keep replies short (4-8 lines), warm, and practical. Do not diagnose. Avoid markdown headings (#), avoid dash bullets (-), avoid robotic formatting. Use natural plain sentences; bold only when important using **text**; emojis are allowed sparingly. Conversation policy: first ask 1 clear clarifying question at a time for up to 2-3 turns (phase=clarify). Once enough details are known, suggest up to 5 relevant tests with brief reasons (phase=recommend). IMPORTANT: quickReplies must be user-side tap replies, written in first-person as if the user is sending them (example: \"I also feel dizzy\", \"This started yesterday\", \"I want to book one now\"). Never write assistant-side commands. Always append exactly one line AI_META_JSON:{\"phase\":\"clarify|recommend\",\"quickReplies\":[\"...\",\"...\",\"...\"],\"tests\":[{\"name\":\"...\",\"category\":\"...\",\"reason\":\"...\"}]} as valid minified JSON.",
+            "You are a caring human-like health assistant. Keep replies short (4-8 lines), warm, and practical. Do not diagnose. Avoid markdown headings (#) and dash bullets (-). Use natural plain sentences; bold only when important using **text**. Conversation policy: first ask 1 clear clarifying question at a time for up to 2-3 turns (phase=clarify). Only suggest tests when truly necessary (phase=recommend); otherwise engage and ask follow-up questions. You may suggest 1-3 common OTC medicines when safe, but do not prescribe; always advise confirmation with a doctor. When a doctor consult seems appropriate, suggest booking and include a book button via meta. IMPORTANT: quickReplies must be user-side tap replies, written in first-person as if the user is sending them. Always append exactly one line AI_META_JSON:{\"phase\":\"clarify|recommend\",\"quickReplies\":[\"...\",\"...\",\"...\"],\"tests\":[{\"name\":\"...\",\"category\":\"...\",\"reason\":\"...\"}],\"medicines\":[{\"name\":\"...\",\"category\":\"...\",\"reason\":\"...\"}],\"doctorSpecialty\":\"...\",\"nextAction\":\"book_doctor|suggest_tests|none\"} as valid minified JSON.",
         },
         ...history.slice(-10),
         { role: "user", content: message },
@@ -262,7 +284,7 @@ export const buildAiService = (config: AiConfig) => {
       const rawReply =
         response.data?.choices?.[0]?.message?.content?.trim?.() ||
         "I could not generate a response right now.";
-      const { cleanedReply, phase, quickReplies, suggestedTests } =
+      const { cleanedReply, phase, quickReplies, suggestedTests, suggestedMedicines, doctorSpecialty, nextAction } =
         parseAiMeta(rawReply);
 
       return {
@@ -272,6 +294,9 @@ export const buildAiService = (config: AiConfig) => {
         phase,
         quickReplies,
         suggestedTests,
+        suggestedMedicines,
+        doctorSpecialty,
+        nextAction,
       };
     },
     labReadinessQuestions: async ({

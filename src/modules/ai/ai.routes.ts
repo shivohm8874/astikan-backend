@@ -62,6 +62,9 @@ const aiRoutes: FastifyPluginAsync = async (app) => {
             phase: data.phase,
             quickReplies: data.quickReplies,
             suggestedTests: data.suggestedTests,
+            suggestedMedicines: data.suggestedMedicines,
+            doctorSpecialty: data.doctorSpecialty,
+            nextAction: data.nextAction,
           },
           createdAt: new Date().toISOString(),
         });
