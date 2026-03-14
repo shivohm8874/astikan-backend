@@ -205,6 +205,20 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       slug(labTestName);
     const priceInr = getNumber(payload, "amount") ?? getNumber(payload, "price") ?? 0;
     const creditCost = getNumber(payload, "creditCost") ?? Math.round(priceInr * 10);
+    const providerStatusRaw =
+      getString(providerData, "request_status") ??
+      getString(providerData, "status") ??
+      getString(providerData, "order_status") ??
+      getString(providerData, "message");
+    const localStatus = normalizeLabStatus(providerStatusRaw);
+    const successCode =
+      getString(providerData, "success") ??
+      getString(providerData, "status_code") ??
+      getString(providerData, "code");
+    const isSuccess =
+      String(successCode ?? "").toLowerCase() === "success" ||
+      String(successCode ?? "") === "1" ||
+      String(providerStatusRaw ?? "").toLowerCase().includes("success");
 
     let labTestCatalogId = await ensureLabCatalogEntry(supabase, {
       provider: "niramaya",
@@ -222,7 +236,7 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       lab_test_catalog_id: labTestCatalogId,
       provider: "niramaya",
       provider_order_reference: String(providerOrderReference),
-      status: "created",
+      status: localStatus,
       slot_at: normalizeSlotAt(payload),
       report_storage_key: null,
       credit_cost: creditCost,
@@ -237,7 +251,7 @@ const labRoutes: FastifyPluginAsync = async (app) => {
     await supabase.from("lab_order_status_history").insert({
       id: crypto.randomUUID(),
       lab_order_id: localOrderId,
-      status: "created",
+      status: localStatus,
       provider_payload_json: providerData,
       created_at: now,
     });
@@ -267,7 +281,16 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       idempotency_key: `lab-order-created:${localOrderId}`,
     });
 
-    return { status: "ok", data: { ...providerData, localOrderId, providerReference } };
+    return {
+      status: "ok",
+      data: {
+        ...providerData,
+        localOrderId,
+        providerReference,
+        providerStatus: localStatus,
+        success: isSuccess,
+      },
+    };
   });
 
   app.get(
@@ -370,6 +393,44 @@ const labRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(401).send({
           status: "error",
           message: "Invalid notification authorization",
+        });
+      }
+
+      const providerData = toRecord(payload);
+      const localStatus = normalizeLabStatus(payload.request_status);
+      const supabase = requireSupabase(app);
+      const mongo = requireMongo(app);
+      const now = new Date().toISOString();
+
+      const { data: existing } = await supabase
+        .from("lab_orders")
+        .select("id")
+        .eq("provider_order_reference", String(payload.reference_id))
+        .maybeSingle();
+
+      if (existing?.id) {
+        await supabase.from("lab_orders").update({
+          status: localStatus,
+          updated_at: now,
+        }).eq("id", existing.id);
+
+        await supabase.from("lab_order_status_history").insert({
+          id: crypto.randomUUID(),
+          lab_order_id: existing.id,
+          status: localStatus,
+          provider_payload_json: providerData,
+          created_at: now,
+        });
+
+        await mongo.collection("lab_order_events").insertOne({
+          labOrderId: existing.id,
+          providerOrderReference: String(payload.reference_id),
+          eventType: "lab_order_notification",
+          payload: providerData,
+          source: "niramaya-webhook",
+          eventAt: now,
+          ingestedAt: now,
+          schemaVersion: 1,
         });
       }
 
