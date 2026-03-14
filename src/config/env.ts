@@ -11,6 +11,7 @@ export type AppEnv = {
   MONGODB_DB_NAME: string;
   REDIS_URL: string;
   REDIS_TTL_SECONDS: number;
+  OPENWEATHER_API_KEY: string;
   NIRAMAYA_TEST_URL: string;
   NIRAMAYA_PROD_URL: string;
   NIRAMAYA_PINCODE_URL: string;
@@ -37,6 +38,7 @@ const envSchema = {
     MONGODB_DB_NAME: { type: "string", default: "astikan" },
     REDIS_URL: { type: "string", default: "" },
     REDIS_TTL_SECONDS: { type: "number", default: 600 },
+    OPENWEATHER_API_KEY: { type: "string", default: "" },
     NIRAMAYA_TEST_URL: {
       type: "string",
       default: "https://test.niramayahealthcare.com/api",
