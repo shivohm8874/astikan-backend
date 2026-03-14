@@ -77,3 +77,15 @@ export async function cacheSet(
     expiresAt: Date.now() + ttl * 1000,
   });
 }
+
+export async function cacheDel(key: string, redisUrl: string): Promise<void> {
+  try {
+    await ensureRedis(redisUrl);
+    if (redisClient?.isOpen) {
+      await redisClient.del(key);
+    }
+  } catch {
+    // Ignore cache delete errors.
+  }
+  memoryCache.delete(key);
+}

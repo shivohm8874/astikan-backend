@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import aiRoutes from "./modules/ai/ai.routes";
 import appointmentsRoutes from "./modules/appointments/appointments.routes";
 import authRoutes from "./modules/auth/auth.routes";
+import behaviorRoutes from "./modules/behavior/behavior.routes";
 import companiesRoutes from "./modules/companies/companies.routes";
 import creditsRoutes from "./modules/credits/credits.routes";
 import doctorsRoutes from "./modules/doctors/doctors.routes";
@@ -17,6 +18,7 @@ const routes: FastifyPluginAsync = async (app) => {
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(aiRoutes, { prefix: "/ai" });
+  await app.register(behaviorRoutes, { prefix: "/behavior" });
   await app.register(employeesRoutes, { prefix: "/employees" });
   await app.register(doctorsRoutes, { prefix: "/doctors" });
   await app.register(appointmentsRoutes, { prefix: "/appointments" });

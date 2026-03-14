@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { aiChatSchema, aiLabReadinessSchema, aiPrescriptionParseSchema } from "./ai.schema";
 import { buildAiService } from "./ai.service";
+import { cacheDel, cacheGet, cacheSet } from "../lab/lab.cache";
 
 const aiRoutes: FastifyPluginAsync = async (app) => {
   const aiService = buildAiService(app.config);
@@ -12,12 +13,18 @@ const aiRoutes: FastifyPluginAsync = async (app) => {
     if (!mongo) {
       return { status: "ok", data: [] };
     }
+    const cacheKey = `ai:thread:${threadId}`;
+    const cached = await cacheGet<Array<Record<string, unknown>>>(cacheKey, app.config.REDIS_URL);
+    if (cached) {
+      return { status: "ok", data: cached };
+    }
     const messages = await mongo
       .collection("chat_threads")
       .find({ threadId })
       .sort({ createdAt: 1 })
       .limit(200)
       .toArray();
+    await cacheSet(cacheKey, messages, app.config.REDIS_TTL_SECONDS, app.config.REDIS_URL);
     return { status: "ok", data: messages };
   });
 
@@ -68,6 +75,9 @@ const aiRoutes: FastifyPluginAsync = async (app) => {
           },
           createdAt: new Date().toISOString(),
         });
+      }
+      if (body.threadId) {
+        await cacheDel(`ai:thread:${body.threadId}`, app.config.REDIS_URL);
       }
 
       if (body.userId && mongo) {
