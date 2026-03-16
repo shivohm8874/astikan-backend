@@ -3,6 +3,14 @@ import type { FastifyPluginAsync } from "fastify";
 import { requireMongo, requireSupabase } from "../core/data";
 
 const integrationsRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/mapbox-token", async () => {
+    const token = (app.config.MAPBOX_TOKEN || "").trim();
+    if (!token) {
+      return { status: "error", message: "Mapbox token not configured" };
+    }
+    return { status: "ok", data: { token } };
+  });
+
   app.get("/providers", async () => {
     const supabase = requireSupabase(app);
     const mongo = requireMongo(app);

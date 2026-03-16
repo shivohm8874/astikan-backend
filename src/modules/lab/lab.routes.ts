@@ -155,13 +155,33 @@ const labRoutes: FastifyPluginAsync = async (app) => {
     return { status: "ok", data };
   });
 
-  app.post("/book-order", async (request) => {
-    const payload = request.body as Record<string, unknown>;
-    const data = await labService.bookOrder(payload);
-    const providerData = toRecord(data);
-    const supabase = requireSupabase(app);
-    const mongo = requireMongo(app);
-    const now = new Date().toISOString();
+    app.post("/book-order", async (request) => {
+      const payload = request.body as Record<string, unknown>;
+      let providerData: Record<string, unknown> = {};
+      let providerError: string | null = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const data = await labService.bookOrder(payload);
+          providerData = toRecord(data);
+          providerError = null;
+          break;
+        } catch (error) {
+          providerError = error instanceof Error ? error.message : String(error);
+          if (attempt < 1) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        }
+      }
+      if (providerError) {
+        providerData = {
+          request_status: "manual_pending",
+          error: providerError,
+          success: "manual",
+        };
+      }
+      const supabase = requireSupabase(app);
+      const mongo = requireMongo(app);
+      const now = new Date().toISOString();
 
     const companyId = await ensureCompanyByReference(app, {
       companyReference: typeof payload.companyReference === "string" ? payload.companyReference : undefined,
@@ -205,20 +225,21 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       slug(labTestName);
     const priceInr = getNumber(payload, "amount") ?? getNumber(payload, "price") ?? 0;
     const creditCost = getNumber(payload, "creditCost") ?? Math.round(priceInr * 10);
-    const providerStatusRaw =
-      getString(providerData, "request_status") ??
-      getString(providerData, "status") ??
-      getString(providerData, "order_status") ??
-      getString(providerData, "message");
-    const localStatus = normalizeLabStatus(providerStatusRaw);
-    const successCode =
-      getString(providerData, "success") ??
-      getString(providerData, "status_code") ??
-      getString(providerData, "code");
-    const isSuccess =
-      String(successCode ?? "").toLowerCase() === "success" ||
-      String(successCode ?? "") === "1" ||
-      String(providerStatusRaw ?? "").toLowerCase().includes("success");
+      const providerStatusRaw =
+        getString(providerData, "request_status") ??
+        getString(providerData, "status") ??
+        getString(providerData, "order_status") ??
+        getString(providerData, "message");
+      const localStatus = normalizeLabStatus(providerStatusRaw);
+      const successCode =
+        getString(providerData, "success") ??
+        getString(providerData, "status_code") ??
+        getString(providerData, "code");
+      const isSuccess =
+        String(successCode ?? "").toLowerCase() === "success" ||
+        String(successCode ?? "") === "1" ||
+        String(providerStatusRaw ?? "").toLowerCase().includes("success") ||
+        String(providerStatusRaw ?? "").toLowerCase().includes("manual");
 
     let labTestCatalogId = await ensureLabCatalogEntry(supabase, {
       provider: "niramaya",
@@ -281,17 +302,18 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       idempotency_key: `lab-order-created:${localOrderId}`,
     });
 
-    return {
-      status: "ok",
-      data: {
-        ...providerData,
-        localOrderId,
-        providerReference,
-        providerStatus: localStatus,
-        success: isSuccess,
-      },
-    };
-  });
+      return {
+        status: "ok",
+        data: {
+          ...providerData,
+          localOrderId,
+          providerReference,
+          providerStatus: localStatus,
+          success: isSuccess,
+          providerError,
+        },
+      };
+    });
 
   app.get(
     "/order-status/:reference",

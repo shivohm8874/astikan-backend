@@ -27,6 +27,7 @@ export type AppEnv = {
   ZEGO_SERVER_SECRET: string;
   AGORA_APP_ID: string;
   AGORA_APP_CERTIFICATE: string;
+  MAPBOX_TOKEN: string;
 };
 
 const envSchema = {
@@ -66,6 +67,7 @@ const envSchema = {
     ZEGO_SERVER_SECRET: { type: "string", default: "" },
     AGORA_APP_ID: { type: "string", default: "" },
     AGORA_APP_CERTIFICATE: { type: "string", default: "" },
+    MAPBOX_TOKEN: { type: "string", default: "" },
   },
   additionalProperties: true,
 } as const;
