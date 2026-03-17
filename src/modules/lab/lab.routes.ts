@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { FastifyPluginAsync } from "fastify";
 
-import { enqueueOutboxEvent, requireMongo, requireSupabase } from "../core/data";
+import { enqueueOutboxEvent, requireMongo, requireMongoBucket, requireSupabase } from "../core/data";
 import { ensureCompanyByReference, ensureEmployeePrincipal } from "../core/identity";
 import {
   catalogQuerySchema,
@@ -98,6 +100,250 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       return { status: "ok", data };
     }
   );
+
+  app.get("/orders", async (request, reply) => {
+    const { employeeId } = request.query as { employeeId?: string };
+    if (!employeeId) {
+      return reply.code(400).send({ status: "error", message: "employeeId is required" });
+    }
+    const supabase = requireSupabase(app);
+    const { data, error } = await supabase
+      .from("lab_orders")
+      .select(
+        "id, provider_order_reference, status, slot_at, created_at, report_storage_key, lab_test_catalog:lab_test_catalog_id(name, provider_test_code)"
+      )
+      .eq("employee_id", employeeId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to fetch lab orders: ${error.message}`);
+    }
+
+    return { status: "ok", data: data ?? [] };
+  });
+
+  app.get("/orders/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const supabase = requireSupabase(app);
+    const { data, error } = await supabase
+      .from("lab_orders")
+      .select(
+        "id, provider_order_reference, status, slot_at, created_at, report_storage_key, lab_test_catalog:lab_test_catalog_id(name, provider_test_code)"
+      )
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to fetch lab order: ${error.message}`);
+    }
+
+    if (!data) {
+      return reply.code(404).send({ status: "error", message: "Order not found" });
+    }
+
+    return { status: "ok", data };
+  });
+
+  app.get("/orders/:id/report-link", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { employeeId } = request.query as { employeeId?: string };
+    if (!employeeId) {
+      return reply.code(400).send({ status: "error", message: "employeeId is required" });
+    }
+    const supabase = requireSupabase(app);
+    const mongo = requireMongo(app);
+    const { data, error } = await supabase
+      .from("lab_orders")
+      .select("id, report_storage_key, employee_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to fetch lab order report: ${error.message}`);
+    }
+
+    if (!data || data.employee_id !== employeeId) {
+      return reply.code(403).send({ status: "error", message: "Unauthorized" });
+    }
+
+    const reportKey = data.report_storage_key;
+    if (!reportKey) {
+      return reply.code(404).send({ status: "error", message: "Report not available" });
+    }
+
+    if (typeof reportKey === "string" && reportKey.startsWith("http")) {
+      return { status: "ok", data: { url: reportKey } };
+    }
+
+    const baseUrl =
+      (app.config.PUBLIC_BASE_URL ?? "").replace(/\/+$/, "") ||
+      `${request.protocol}://${request.hostname}`;
+
+    return { status: "ok", data: { url: `${baseUrl}/api/lab/orders/${id}/report?employeeId=${encodeURIComponent(employeeId)}` } };
+  });
+
+  app.get("/orders/:id/report", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { employeeId } = request.query as { employeeId?: string };
+    if (!employeeId) {
+      return reply.code(400).send({ status: "error", message: "employeeId is required" });
+    }
+    const supabase = requireSupabase(app);
+    const mongoBucket = requireMongoBucket(app);
+    const { data, error } = await supabase
+      .from("lab_orders")
+      .select("id, report_storage_key, employee_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to fetch lab order report: ${error.message}`);
+    }
+
+    if (!data || data.employee_id !== employeeId) {
+      return reply.code(403).send({ status: "error", message: "Unauthorized" });
+    }
+
+    const reportKey = data.report_storage_key;
+    if (!reportKey) {
+      return reply.code(404).send({ status: "error", message: "Report not available" });
+    }
+
+    if (!mongoBucket) {
+      return reply.code(503).send({ status: "error", message: "Report storage unavailable" });
+    }
+
+    const key = String(reportKey);
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(key);
+    const { ObjectId } = await import("mongodb");
+    await mongo.collection("lab_report_views").insertOne({
+      labOrderId: id,
+      employeeId,
+      reportKey: key,
+      viewedAt: new Date().toISOString(),
+      source: "employee_app",
+    });
+    const stream = isObjectId
+      ? mongoBucket.openDownloadStream(new ObjectId(key))
+      : mongoBucket.openDownloadStreamByName(key);
+
+    reply.header("Content-Type", "application/pdf");
+    reply.header("Content-Disposition", "inline; filename=\"lab-report.pdf\"");
+    return reply.send(stream);
+  });
+
+  app.get("/orders/stream", async (request, reply) => {
+    const { employeeId } = request.query as { employeeId?: string };
+    if (!employeeId) {
+      return reply.code(400).send({ status: "error", message: "employeeId is required" });
+    }
+
+    const supabase = requireSupabase(app);
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.flushHeaders();
+
+    let active = true;
+    let lastSnapshot = new Map<string, string>();
+
+    const sendEvent = (event: string, data: unknown) => {
+      reply.raw.write(`event: ${event}\n`);
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const poll = async () => {
+      if (!active) return;
+      const { data, error } = await supabase
+        .from("lab_orders")
+        .select("id, status, report_storage_key, lab_test_catalog:lab_test_catalog_id(name)")
+        .eq("employee_id", employeeId)
+        .order("created_at", { ascending: false });
+
+      if (error || !data) {
+        sendEvent("error", { message: "Unable to fetch lab orders" });
+        return;
+      }
+
+      const updates: Array<{ id: string; status: string; testName: string; reportReady: boolean }> = [];
+      data.forEach((row) => {
+        const status = String(row.status ?? "created");
+        const prev = lastSnapshot.get(row.id);
+        if (prev !== status) {
+          updates.push({
+            id: row.id,
+            status,
+            testName: row.lab_test_catalog?.name ?? "Lab Test",
+            reportReady: Boolean(row.report_storage_key),
+          });
+          lastSnapshot.set(row.id, status);
+        }
+      });
+
+      if (updates.length) {
+        sendEvent("lab-order-update", updates);
+      }
+    };
+
+    const interval = setInterval(poll, 8000);
+    await poll();
+
+    request.raw.on("close", () => {
+      active = false;
+      clearInterval(interval);
+    });
+  });
+
+  app.post("/backfill-reports", async (_request, reply) => {
+    const supabase = requireSupabase(app);
+    const labService = buildLabService(app.config);
+
+    const { data, error } = await supabase
+      .from("lab_orders")
+      .select("id, provider_order_reference, report_storage_key")
+      .is("report_storage_key", null)
+      .order("created_at", { ascending: false })
+      .limit(200);
+
+    if (error) {
+      throw new Error(`Failed to fetch pending reports: ${error.message}`);
+    }
+
+    const results: Array<{ id: string; status: string; message?: string }> = [];
+
+    for (const row of data ?? []) {
+      if (!row.provider_order_reference) {
+        results.push({ id: row.id, status: "skipped", message: "Missing provider reference" });
+        continue;
+      }
+      try {
+        const providerData = toRecord(await labService.orderStatus(row.provider_order_reference));
+        const reportKey =
+          getString(providerData, "report_url") ??
+          getString(providerData, "digital_report") ??
+          getString(providerData, "report_link") ??
+          null;
+        if (!reportKey) {
+          results.push({ id: row.id, status: "no-report" });
+          continue;
+        }
+        const storedKey = await maybePersistReportUrl(app, {
+          reportUrl: reportKey,
+          existingKey: null,
+          orderId: row.id,
+        });
+        await supabase.from("lab_orders").update({
+          report_storage_key: storedKey ?? reportKey,
+          updated_at: new Date().toISOString(),
+        }).eq("id", row.id);
+        results.push({ id: row.id, status: "updated" });
+      } catch (err) {
+        results.push({ id: row.id, status: "failed", message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return reply.send({ status: "ok", data: results });
+  });
 
   app.get(
     "/search-test",
@@ -326,16 +572,27 @@ const labRoutes: FastifyPluginAsync = async (app) => {
       const mongo = requireMongo(app);
       const now = new Date().toISOString();
       const localStatus = normalizeLabStatus(getString(providerData, "request_status") ?? getString(providerData, "status"));
+      const reportKey =
+        getString(providerData, "report_url") ??
+        getString(providerData, "digital_report") ??
+        getString(providerData, "report_link") ??
+        null;
 
       const { data: existing } = await supabase
         .from("lab_orders")
-        .select("id")
+        .select("id, report_storage_key")
         .eq("provider_order_reference", reference)
         .maybeSingle();
 
       if (existing?.id) {
+        const storedKey = await maybePersistReportUrl(app, {
+          reportUrl: reportKey,
+          existingKey: existing.report_storage_key ?? null,
+          orderId: existing.id,
+        });
         await supabase.from("lab_orders").update({
           status: localStatus,
+          report_storage_key: storedKey ?? reportKey ?? undefined,
           updated_at: now,
         }).eq("id", existing.id);
 
@@ -420,19 +677,30 @@ const labRoutes: FastifyPluginAsync = async (app) => {
 
       const providerData = toRecord(payload);
       const localStatus = normalizeLabStatus(payload.request_status);
+      const reportKey =
+        getString(providerData, "report_url") ??
+        getString(providerData, "digital_report") ??
+        getString(providerData, "report_link") ??
+        null;
       const supabase = requireSupabase(app);
       const mongo = requireMongo(app);
       const now = new Date().toISOString();
 
       const { data: existing } = await supabase
         .from("lab_orders")
-        .select("id")
+        .select("id, report_storage_key")
         .eq("provider_order_reference", String(payload.reference_id))
         .maybeSingle();
 
       if (existing?.id) {
+        const storedKey = await maybePersistReportUrl(app, {
+          reportUrl: reportKey,
+          existingKey: existing.report_storage_key ?? null,
+          orderId: existing.id,
+        });
         await supabase.from("lab_orders").update({
           status: localStatus,
+          report_storage_key: storedKey ?? reportKey ?? undefined,
           updated_at: now,
         }).eq("id", existing.id);
 
@@ -490,25 +758,46 @@ async function ensureLabCatalogEntry(
 
   const labTestCatalogId = crypto.randomUUID();
   const now = new Date().toISOString();
-  const { error } = await supabase.from("lab_test_catalog").insert({
-    id: labTestCatalogId,
-    provider: input.provider,
-    provider_test_code: input.providerTestCode,
-    name: input.name,
-    category: "General Test",
-    sample_type: null,
-    tat_hours: null,
-    base_price_inr: input.basePriceInr,
-    default_credit_cost: Math.round(input.basePriceInr * 10),
-    availability_status: "live",
-    coverage_note: null,
-    metadata_json: {},
-    created_at: now,
-    updated_at: now,
-  });
+  const { data, error } = await supabase
+    .from("lab_test_catalog")
+    .upsert(
+      {
+        id: labTestCatalogId,
+        provider: input.provider,
+        provider_test_code: input.providerTestCode,
+        name: input.name,
+        category: "General Test",
+        sample_type: null,
+        tat_hours: null,
+        base_price_inr: input.basePriceInr,
+        default_credit_cost: Math.round(input.basePriceInr * 10),
+        availability_status: "live",
+        coverage_note: null,
+        metadata_json: {},
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        onConflict: "provider,provider_test_code",
+      }
+    )
+    .select("id")
+    .maybeSingle();
+
   if (error) {
+    if ((error as { code?: string }).code === "23505") {
+      const { data: existingAfter } = await supabase
+        .from("lab_test_catalog")
+        .select("id")
+        .eq("provider", input.provider)
+        .eq("provider_test_code", input.providerTestCode)
+        .maybeSingle();
+      if (existingAfter?.id) return existingAfter.id;
+    }
     throw new Error(`Failed to ensure lab test catalog entry: ${error.message}`);
   }
+
+  if (data?.id) return data.id;
   return labTestCatalogId;
 }
 
@@ -558,6 +847,42 @@ function normalizeLabStatus(input: string | null) {
 
 function slug(input: string) {
   return input.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+async function maybePersistReportUrl(
+  app: Parameters<FastifyPluginAsync>[0],
+  input: {
+    reportUrl: string | null;
+    existingKey: string | null;
+    orderId: string;
+  }
+) {
+  if (!input.reportUrl) return null;
+  if (input.existingKey && !input.existingKey.startsWith("http")) {
+    return input.existingKey;
+  }
+
+  try {
+    const response = await fetch(input.reportUrl);
+    if (!response.ok || !response.body) {
+      return input.reportUrl;
+    }
+    const contentType = response.headers.get("content-type") ?? "application/pdf";
+    const bucket = requireMongoBucket(app);
+    const fileName = `lab-reports/${input.orderId}/${Date.now()}.pdf`;
+    const uploadStream = bucket.openUploadStream(fileName, {
+      contentType,
+      metadata: {
+        source: "niramaya",
+        orderId: input.orderId,
+        reportUrl: input.reportUrl,
+      },
+    });
+    await pipeline(Readable.fromWeb(response.body as unknown as ReadableStream), uploadStream);
+    return uploadStream.id?.toString() ?? fileName;
+  } catch {
+    return input.reportUrl;
+  }
 }
 
 async function syncLabOrderStatus(

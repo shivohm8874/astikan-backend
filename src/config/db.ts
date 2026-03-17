@@ -57,6 +57,7 @@ const dbPlugin: FastifyPluginAsync = async (app) => {
           mongo.collection("system_error_logs").createIndex({ eventAt: -1, severity: 1, module: 1 }),
           mongo.collection("program_activity_events").createIndex({ programId: 1, eventAt: -1 }),
           mongo.collection("freelance_case_events").createIndex({ caseRequestId: 1, eventAt: -1 }),
+          mongo.collection("lab_report_views").createIndex({ labOrderId: 1, viewedAt: -1 }),
         ]);
       } catch (error) {
         app.log.warn({ error }, "Mongo index creation skipped (provider/endpoint may not support createIndexes)");
