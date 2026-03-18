@@ -1,6 +1,6 @@
 import crypto from "node:crypto"
 import { FastifyInstance } from "fastify"
-import { requireSupabase } from "../core/data"
+import { requireMongo, requireSupabase } from "../core/data"
 
 export default async function healthRoutes(app: FastifyInstance) {
   app.get("/", async () => {
@@ -44,5 +44,38 @@ export default async function healthRoutes(app: FastifyInstance) {
     }
 
     return { status: "ok", data: { employeeId: body.employeeId } }
+  })
+
+  app.post("/vitals", async (request) => {
+    const body = request.body as {
+      companyId?: string
+      employeeId?: string
+      metric?: string
+      value?: number
+      unit?: string
+      source?: string
+      signalQuality?: number
+    }
+
+    if (!body.companyId || !body.employeeId || !body.metric || typeof body.value !== "number") {
+      throw new Error("companyId, employeeId, metric, and value are required")
+    }
+
+    const mongo = requireMongo(app)
+    const now = new Date().toISOString()
+    await mongo.collection("health_signals").insertOne({
+      id: crypto.randomUUID(),
+      companyId: body.companyId,
+      employeeId: body.employeeId,
+      metric: body.metric,
+      value: body.value,
+      unit: body.unit ?? null,
+      source: body.source ?? "camera",
+      signalQuality: typeof body.signalQuality === "number" ? body.signalQuality : null,
+      eventAt: now,
+      createdAt: now,
+    })
+
+    return { status: "ok" }
   })
 }
