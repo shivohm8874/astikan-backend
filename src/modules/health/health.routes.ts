@@ -92,8 +92,8 @@ export default async function healthRoutes(app: FastifyInstance) {
       .limit(1)
       .toArray()
     if (!latest.length) return { value: null }
-    const record = latest[0] as { value: number; unit?: string; eventAt?: string }
-    return { value: record.value, unit: record.unit ?? null, eventAt: record.eventAt ?? null }
+    const record = latest[0] as unknown as { value?: number; unit?: string; eventAt?: string }
+    return { value: record.value ?? null, unit: record.unit ?? null, eventAt: record.eventAt ?? null }
   })
 
   app.post("/vitals/history", async (request) => {
@@ -109,10 +109,13 @@ export default async function healthRoutes(app: FastifyInstance) {
       .sort({ eventAt: -1 })
       .limit(limit)
       .toArray()
-    const points = rows.map((row) => ({
-      value: (row as { value: number }).value,
-      eventAt: (row as { eventAt?: string }).eventAt ?? new Date().toISOString(),
-    }))
+    const points = rows
+      .map((row) => row as unknown as { value?: number; eventAt?: string })
+      .filter((row) => typeof row.value === "number")
+      .map((row) => ({
+        value: row.value as number,
+        eventAt: row.eventAt ?? new Date().toISOString(),
+      }))
     return { points }
   })
 }
