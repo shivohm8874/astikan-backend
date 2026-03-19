@@ -483,9 +483,11 @@ export const buildAiService = (config: AiConfig) => {
     dailyHealthBrief: async ({
       city,
       items,
+      dayKey,
     }: {
       city: string;
       items: Array<{ title: string; link: string; pubDate?: string; source?: string }>;
+      dayKey: string;
     }): Promise<{ city: string; topic: string; tips: DailyTipPayload[] }> => {
       const resolvedApiKey = (config.GROK_API_KEY || "").trim();
       if (!resolvedApiKey) {
@@ -508,8 +510,10 @@ export const buildAiService = (config: AiConfig) => {
         .join("\n");
 
       const userPrompt = [
+        `Date: ${dayKey}`,
         `City: ${city}`,
         "You are selecting the most relevant daily health topic and 3 micro-tips based on local news and alerts.",
+        "Make today's tips distinct from yesterday while staying accurate.",
         "Use the headlines below. If none are urgent, focus on air quality, heat, hydration, or stress.",
         "Return ONLY valid minified JSON in this shape:",
         "{\"city\":\"...\",\"topic\":\"...\",\"tips\":[{\"id\":\"daily-1\",\"title\":\"...\",\"summary\":\"...\",\"tags\":[\"...\"],\"moodTags\":[\"general\"],\"heroImage\":\"https://images.unsplash.com/...\",\"iconKey\":\"activity|droplet|smile|moon|heart|thermo\",\"sections\":[{\"heading\":\"...\",\"body\":\"...\",\"coach\":\"...\",\"question\":{\"id\":\"q1\",\"text\":\"...\",\"options\":[\"...\",\"...\",\"...\"]}}]}]}",

@@ -51,6 +51,25 @@ function toRecent(items: RssItem[], days = 3) {
   });
 }
 
+function seedFromString(input: string) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash || 1;
+}
+
+function seededShuffle<T>(items: T[], seed: number) {
+  const arr = [...items];
+  let s = seed;
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const j = s % (i + 1);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 async function fetchRss(url: string): Promise<RssItem[]> {
   const res = await fetch(url, {
     headers: {
@@ -198,7 +217,8 @@ const newsRoutes: FastifyPluginAsync = async (app) => {
     }
     if (!city) city = "your area";
 
-    const cacheKey = `news:daily:${city.toLowerCase()}:${new Date().toISOString().slice(0, 10)}`;
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const cacheKey = `news:daily:${city.toLowerCase()}:${dayKey}`;
     const cached = await cacheGet<Record<string, unknown>>(cacheKey, app.config.REDIS_URL);
     if (cached) return reply.send({ status: "ok", data: cached });
 
@@ -226,22 +246,26 @@ const newsRoutes: FastifyPluginAsync = async (app) => {
 
     if (unique.length === 0) {
       const fallback = fallbackTips(city);
-      await cacheSet(cacheKey, fallback, 6 * 60 * 60, app.config.REDIS_URL);
-      return reply.send({ status: "ok", data: fallback });
+      const shuffled = { ...fallback, tips: seededShuffle(fallback.tips, seedFromString(dayKey + city)) };
+      await cacheSet(cacheKey, shuffled, 6 * 60 * 60, app.config.REDIS_URL);
+      return reply.send({ status: "ok", data: shuffled });
     }
 
     try {
       const aiResult = await aiService.dailyHealthBrief({
         city,
         items: unique,
+        dayKey,
       });
-      await cacheSet(cacheKey, aiResult, 6 * 60 * 60, app.config.REDIS_URL);
-      return reply.send({ status: "ok", data: aiResult });
+      const shuffled = { ...aiResult, tips: seededShuffle(aiResult.tips, seedFromString(dayKey + city)) };
+      await cacheSet(cacheKey, shuffled, 6 * 60 * 60, app.config.REDIS_URL);
+      return reply.send({ status: "ok", data: shuffled });
     } catch (error) {
       app.log.warn({ error }, "Failed to build AI daily tips, using fallback.");
       const fallback = fallbackTips(city);
-      await cacheSet(cacheKey, fallback, 6 * 60 * 60, app.config.REDIS_URL);
-      return reply.send({ status: "ok", data: fallback });
+      const shuffled = { ...fallback, tips: seededShuffle(fallback.tips, seedFromString(dayKey + city)) };
+      await cacheSet(cacheKey, shuffled, 6 * 60 * 60, app.config.REDIS_URL);
+      return reply.send({ status: "ok", data: shuffled });
     }
   });
 };
